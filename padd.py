@@ -45,33 +45,42 @@ def humanize_seconds(n):
 
 def apply_defaults(d):
     defaults = {
-        "bs": convert_size("5M"),
+        "bs": "5M",
         "if": sys.stdin,
         "of": sys.stdout,
         "status": "progress",
-        "oflags": (),
+        "oflags": "",
+        "oftype": None,
+        "iflags": "",
+        "iftype": None,
     }
     for k, v in defaults.items():
         if k not in d.keys():
             d[k] = v
-        # if k == 'of' and v in ('', None, False):
-        #    d[k] = os.path.basename
     return d
 
 
 def sanitize_args(d):
-    for k, v in d.items():
-        if k == "bs":
+    for k, v in apply_defaults(d).items():
+        if k == "bs" and k.isalpha():
             d[k] = convert_size(v)
         elif k in ("if", "of"):
             if v[0:4] == "/dev" and not os.path.isdir(v):
                 if k == "if":
                     d[k] = open(v, "rb")
+                    d["iftype"] = "\033[34mD\033[0m"
                 elif k == "of":
                     d[k] = open(v, "wb+")
+                    d["oftype"] = "\033[32mD\033[0m"
             elif v[0:4] not in ("http", "ftp:") and not os.path.isdir(v):
-                d[k] = open(v, "wb+")
+                if k == "if":
+                    d[k] = open(v, "rb")
+                    d["iftype"] = "\033[34mF\033[0m"
+                elif k == "of":
+                    d[k] = open(v, "wb+")
+                    d["oftype"] = "\033[32mF\033[0m"
             elif k == "if" and v.find(":") != -1 and v[0:4] in ("http", "ftp:"):
+                d["iftype"] = "\033[34mN\033[0m"
                 d[k] = request.urlopen(v)
             else:
                 raise Exception(f"sanitize_args: Invalid value for `of` given: {v}")
@@ -86,6 +95,7 @@ def transfer(d):
         "read": 0,
         "write": 0,
     }
+    art = f"{d['iftype']}\033[33m<->\033[0m{d['oftype']}"
 
     try:
         # Get length if input is a download
@@ -94,6 +104,10 @@ def transfer(d):
         if os.path.isfile(d["if"].name):
             data["total"] = os.path.getsize(d["if"].name)
 
+    # And set these outside the loop for status
+    wrote = None
+    rate = None
+    bars = None
     # Fill our buffer before the loop
     buff = d["if"].read(d["bs"])
     while buff:
@@ -117,7 +131,6 @@ def transfer(d):
 
             if data["total"]:
                 perc = float(data["write"]) / float(data["total"]) * 100.0
-                totes = humanize_size(data["total"])
                 sleft = int((data["total"] - data["write"]) / srate)
                 tleft = humanize_seconds(sleft)
                 bars = f"\033[33m{'-' * 20}\033[0m"
@@ -128,12 +141,12 @@ def transfer(d):
                     xspce = f'\033[33m{"-" * nspce}\033[0m'
                     bars = f"{xbars}{xspce}"
                 sys.stderr.write(
-                    f"\033[32m<-->\033[0m {wrote} of {totes} @ {rate} / sec [eta: {tleft}] [{bars}] ({perc:6.2f}%)\r"
+                    f"{art} {wrote} @ {rate}/s [eta: {tleft}] [{bars}] ({perc:6.2f}%)\r"
                 )
                 sys.stderr.flush()
             elif not data["total"]:
                 htime = humanize_seconds(int(time.time() - START_T))
-                sys.stderr.write(f"\033[32m<-->\033[0m {wrote} @ {rate} in {htime}\r")
+                sys.stderr.write(f"{art} {wrote} @ {rate}/s in {htime}\r")
                 sys.stderr.flush()
         # refill the buffer
         buff = d["if"].read(d["bs"])
@@ -142,6 +155,13 @@ def transfer(d):
         d["if"].close()
     except Exception:
         pass
+    # Final status message
+    if d["status"] == "progress" and data["total"]:
+        time_s = humanize_seconds(int(time.time() - START_T))
+        sys.stderr.write(
+            f"{art} {wrote} @ {rate}/s [run: {time_s}] [{bars}] (100.00%)\n"
+        )
+        sys.stderr.flush()
 
 
 def parse_args():
@@ -154,26 +174,18 @@ def parse_args():
             else:
                 key = _key
             retv[key] = val
-    retv = sanitize_args(retv)
-    return apply_defaults(retv)
+    return sanitize_args(retv)
 
 
 def main():
     try:
         data = parse_args()
         transfer(data)
-        # Final status message
-        if data["status"] == "progress":
-            time_r = int(time.time() - START_T)
-            sys.stderr.write(
-                f"\n\033[32m<-->\033[0m Total runtime: {humanize_seconds(time_r)}\n"
-            )
-            sys.stderr.flush()
     except KeyboardInterrupt:
         sys.exit(1)
     except Exception as error:
-        print(error)
-        sys.exit(1)
+        print(f"ERROR: {error}")
+        raise
 
 
 if __name__ == "__main__":
